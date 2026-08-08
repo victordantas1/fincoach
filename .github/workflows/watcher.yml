@@ -1,0 +1,27 @@
+name: Serviço de Triagem (Watcher)
+
+on:
+  schedule:
+    # Todo dia às 09:00 UTC — ajustar conforme necessário
+    - cron: "0 9 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  check-emails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Rodar o Serviço de Triagem
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          GOOGLE_OAUTH_CREDENTIALS_PATH: ${{ secrets.GOOGLE_OAUTH_CREDENTIALS_PATH }}
+          AGENT_WEBHOOK_TOKEN: ${{ secrets.AGENT_WEBHOOK_TOKEN }}
+        run: python -m watcher.check_emails
