@@ -100,7 +100,7 @@ Sequência fixa e determinística — a maioria dos e-mails segue esse caminho s
 
 ### 3.6 Plataforma/Dashboard
 - Interface web simples para visualizar gastos por categoria, tendências ao longo do tempo, navegar pelos documentos arquivados, e conversar com o coach.
-- Não é o foco inicial do projeto — ver Roadmap (Seção 6).
+- Não é o foco inicial do projeto — ver Roadmap (Seção 7).
 
 ---
 
@@ -123,7 +123,39 @@ Sequência fixa e determinística — a maioria dos e-mails segue esse caminho s
 
 ---
 
-## 5. Segurança e Confiabilidade
+## 5. Observabilidade e Gestão de Prompts (Langfuse)
+
+Um sistema multi-agente sem observabilidade é uma caixa preta: quando uma categorização sai errada ou o coach dá uma resposta ruim, não há como saber qual prompt rodou, quantos tokens custou, ou qual provedor respondeu. Esta camada é transversal a todos os agentes.
+
+**Ferramenta:** [Langfuse](https://langfuse.com) — open source, com free tier ("Hobby") que cobre as necessidades do projeto: **50k unidades/mês, 30 dias de retenção de dados, 2 usuários, sem cartão de crédito**. Mantém a premissa de custo $0 (Seção 4). Caso o volume ou a janela de retenção se tornem limitantes, o self-hosting é gratuito e open source — a decisão de migrar não implica retrabalho de instrumentação, já que o SDK é o mesmo.
+
+### 5.1 Tracing
+
+- Cada execução do pipeline de estruturação vira um **trace** único, com um span por agente (extração → categorização → validação), permitindo ver a cadeia inteira a partir de um e-mail de origem.
+- Cada sessão do Agente Conversacional vira um trace, com um span por tool-call — é o que torna depurável o comportamento do único componente com decisão dinâmica (§3.5), incluindo os casos em que ele bate no teto de passos (§4).
+- Traces carregam metadados de correlação: ID do e-mail de origem, banco, e ID da transação quando aplicável — conectando o que é observado no Langfuse ao que está persistido no MongoDB.
+
+### 5.2 Monitoramento de custo e consumo
+
+- Ainda que a operação seja de custo monetário zero, o consumo de tokens e requisições é o recurso **efetivamente escasso** do projeto, dado os limites dos free tiers (§4). Monitorá-lo é o equivalente prático a monitorar custo.
+- O Langfuse rastreia tokens e custo por geração, com breakdown por modelo e por provedor — o que permite responder na prática quanto de orçamento diário cada parte do sistema consome, e identificar quem está queimando cota (ex: um backfill, ou um agente com prompt inflado).
+- Serve também de instrumentação para o fallback Gemini → OpenRouter (§4): qual provedor atendeu cada chamada, com que frequência o fallback é acionado, e a latência de cada caminho.
+
+### 5.3 Versionamento de prompts
+
+- Os prompts dos agentes ficam gerenciados no Langfuse, versionados e recuperados em runtime por label (ex: `production`), em vez de hard-coded no código.
+- Ganho central: permite iterar em prompt sem redeploy do serviço no Render, e — mais importante para o projeto — **atribuir uma mudança de qualidade de saída a uma versão específica de prompt**, já que cada trace registra qual versão gerou aquele resultado.
+- Casa diretamente com os critérios de aceitação baseados em fixtures previstos para os agentes de extração, categorização e validação (§3.2): a comparação entre versões de prompt passa a ser mensurável, não impressionista.
+- **Fallback obrigatório:** o sistema mantém uma cópia local dos prompts e a usa caso o Langfuse esteja indisponível. Observabilidade não pode ser ponto único de falha do caminho crítico — se o Langfuse cair, o pipeline continua funcionando.
+
+### 5.4 Privacidade
+
+- Os traces contêm dados financeiros pessoais (estabelecimentos, valores, categorias). Vale a mesma consideração consciente feita na Seção 4 sobre o free tier do Gemini: é mais um serviço terceiro com acesso a esse conteúdo.
+- Mitigação disponível caso isso pese: o Langfuse permite mascaramento de dados no SDK antes do envio, e o self-hosting elimina a questão por completo.
+
+---
+
+## 6. Segurança e Confiabilidade
 
 - **Least privilege no Gmail:** escopo `gmail.readonly`, idealmente restrito por filtro de rótulo/remetente quando possível.
 - **E-mail como superfície de prompt injection:** conteúdo de e-mail (corpo, anexo) é tratado como **dado, nunca como instrução**, em todos os agentes do pipeline. Esse princípio deve ser documentado explicitamente no código/prompts do sistema, não só como boa intenção.
@@ -133,7 +165,7 @@ Sequência fixa e determinística — a maioria dos e-mails segue esse caminho s
 
 ---
 
-## 6. Roadmap de Construção Incremental
+## 7. Roadmap de Construção Incremental
 
 1. **Fase 1 — Ingestão + Estruturação:** Serviço de Triagem + pipeline fixo (extração, categorização, validação) + persistência no MongoDB/Drive. Já entrega valor sozinho: extratos organizados e categorizados automaticamente.
 2. **Fase 2 — Memória + Coach:** camada de memória RAG consolidada + Agente Conversacional com acesso às ferramentas de consulta.
@@ -143,16 +175,18 @@ Cada fase é testável e demonstrável isoladamente — boa estrutura também pa
 
 ---
 
-## 7. Riscos e Trade-offs Conhecidos
+## 8. Riscos e Trade-offs Conhecidos
 
 - **Parsing de PDF varia por banco:** cada banco tem layout de fatura/extrato diferente — o Agente de Extração precisa ser ajustado/testado especificamente para o formato do Nubank inicialmente, com extensão planejada (não implementada) para outros bancos.
 - **Limites de rate limit do Gemini/OpenRouter mudam com frequência:** conferir valores atuais antes de dimensionar qualquer teste de carga ou backfill grande.
 - **Free tier do Gemini usa dados para treinamento:** decisão consciente documentada na Seção 4 — não é um descuido.
 - **MongoDB Atlas free tier tem 512MB:** suficiente para o volume esperado (transações + metadados, documentos ficam no Drive), mas vale monitorar conforme o histórico cresce ao longo dos anos.
+- **Retenção de 30 dias no free tier do Langfuse:** análises de tendência que dependam de histórico longo de traces não são possíveis sem self-hosting ou plano pago (§5). Aceitável, já que o dado financeiro em si — que é o que precisa de histórico longo — vive no MongoDB, não nos traces.
+- **Mais um terceiro com acesso a dado financeiro:** o Langfuse na nuvem soma-se ao Gemini nessa categoria (§5.4) — mitigável por mascaramento no SDK ou self-hosting, se a preocupação pesar mais que a conveniência.
 
 ---
 
-## 8. Próximos Passos
+## 9. Próximos Passos
 
 - Definir nome do projeto e criar o repositório.
 - Detalhar o schema de dados do MongoDB (transações, categorias, resumos, IDs processados).
